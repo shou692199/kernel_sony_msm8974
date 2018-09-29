@@ -1,6 +1,6 @@
-/* kernel/drivers/video/msm/mdss/mhl_sii8620_8061_drv/mhl_sii8620_device_edid.c
+/* vendor/semc/hardware/mhl/mhl_sii8620_8061_drv/mhl_sii8620_device_edid.c
  *
- * Copyright (C) 2013 Sony Mobile Communications AB.
+ * Copyright (C) 2013 Sony Mobile Communications Inc.
  * Copyright (C) 2013 Silicon Image Inc.
  *
  * Author: [Hirokuni Kawasaki <hirokuni.kawasaki@sonymobile.com>]
@@ -11,33 +11,22 @@
  * of the License, or (at your option) any later version.
  */
 
-#include "linux/string.h"
-
-#include "mhl_sii8620_8061_device.h"
-#include "si_8620_regs.h"
-#include "mhl_platform.h"
-#include "mhl_common.h"
 #include <linux/delay.h>
-#include <linux/errno.h>
+
+#include "mhl_common.h"
+#include "mhl_sii8620_8061_device.h"
 #include "mhl_lib_timer.h"
 #include "mhl_cbus_control.h"
+#include "mhl_lib_edid.h"
 
 #pragma GCC diagnostic ignored "-Wunused-function"
 
 /* SCDT */
-#define BIT_INTR_SCDT_CHANGE	BIT_PAGE_0_INTR5_INTR5_STAT0
+#define BIT_INTR_SCDT_CHANGE	BIT_INTR5_STAT0
 
 /* EDID */
-#define REG_EDID_FIFO_INT_MASK	REG_PAGE_2_INTR9_MASK /*TX_PAGE_2, 0xE1*/
-#define BIT_INTR9_EDID_ERROR_MASK	BIT_PAGE_2_INTR9_MASK_INTR9_MASK6
-#define BIT_INTR9_EDID_DONE_MASK	BIT_PAGE_2_INTR9_MASK_INTR9_MASK5
-#define BIT_INTR9_DEVCAP_DONE_MASK	BIT_PAGE_2_INTR9_MASK_INTR9_MASK4
-#define VAL_INTR9_EDID_ERROR_MASK	VAL_PAGE_2_INTR9_MASK_INTR9_MASK6_ENABLE
-#define VAL_INTR9_EDID_DONE_MASK	VAL_PAGE_2_INTR9_MASK_INTR9_MASK5_ENABLE
-
-#define BIT_INTR9_EDID_ERROR	BIT_PAGE_2_INTR9_INTR9_STAT6
-#define BIT_INTR9_EDID_DONE	BIT_PAGE_2_INTR9_INTR9_STAT5
-#define BIT_INTR9_DEVCAP_DONE	BIT_PAGE_2_INTR9_INTR9_STAT4
+#define VAL_INTR9_EDID_ERROR_MASK	BIT_INTR9_MASK6
+#define VAL_INTR9_EDID_DONE_MASK	BIT_INTR9_MASK5
 
 /* 6s is enough to clear edid done */
 #define MHL_CRL_EDID_DONE_TIME 6000
@@ -52,114 +41,110 @@ static bool edid_is_ext_block(uint8_t *edid);
 #define IS_BLOCK_0(_edid)   mhl_edid_check_edid_header(_edid)
 #define IS_EXT_BLOCK(_edid) edid_is_ext_block(_edid)
 
+/* [vic], [H.Pixel], [Aspect ratio | Refresh Rate], */
+/* est timing1, 2, 3, pixel clock */
+#define MHL_VFRMT_640x480p60_4_3_TIMING \
+	{1,  (uint32_t)0x31, (uint32_t)0x40, (uint32_t)0x20, 0, 0, 25175000,\
+	640, 480, false, 800, 160, 525, 45,\
+	31500, 31465, 60000, 59940, 25200, 25180, 60000, 59940, true}
 
+#define MHL_VFRMT_720x480p60_16_9_TIMING \
+	{3,  (uint32_t)0x3B, (uint32_t)0xC0, 0, 0, 0,   27000000,\
+	720, 480, false, 858, 138, 525, 45,\
+	31500, 31465, 60000, 59940, 27030, 27000, 60000, 60000, false}
 
-/*[vic], [H.Pixel], [Aspect ratio | Refresh Rate], est timing1, 2, 3 */
-/* todo separate standard timing info */
-#define HDMI_VFRMT_640x480p60_4_3_TIMING    {1,  (uint32_t)0x31, (uint32_t)0x40, (uint32_t)0x20, 0, 0}
-#define HDMI_VFRMT_720x480p60_16_9_TIMING   {3,  (uint32_t)0x3B, (uint32_t)0xC0, 0, 0, 0}
-#define HDMI_VFRMT_1280x720p60_16_9_TIMING  {4,  (uint32_t)0x81, (uint32_t)0xC0, 0, 0, 0}
-#define HDMI_VFRMT_1920x1080p60_16_9_TIMING	{16, (uint32_t)0xD1, (uint32_t)0xC0, 0, 0, 0}
-#define HDMI_VFRMT_1920x1080p24_16_9_TIMING {32, (uint32_t)0xD1, (uint32_t)0xE0, 0, 0, 0}
-#define HDMI_VFRMT_1920x1080p30_16_9_TIMING {34, (uint32_t)0xD1, (uint32_t)0xE0, 0, 0, 0}
-#define HDMI_VFRMT_3840x2160p24_16_9_TIMING {93, (uint32_t)0xC1, (uint32_t)0xE0, 0, 0, 0}
-#define HDMI_VFRMT_3840x2160p30_16_9_TIMING {95, (uint32_t)0xC1, (uint32_t)0xE0, 0, 0, 0}
+#define MHL_VFRMT_1280x720p60_16_9_TIMING \
+	{4,  (uint32_t)0x81, (uint32_t)0xC0, 0, 0, 0,  74250000,\
+	1280, 720, false, 1650, 370, 750, 30,\
+	45000, 44955, 60000, 59940,  74250, 74180, 60000, 59940, false}
 
-#define RX_DPD_BITS (BIT_PAGE_0_DPD_PDNRX12 \
-			  | BIT_PAGE_0_DPD_PDIDCK_N \
-			  | BIT_PAGE_0_DPD_PD_MHL_CLK_N)
+#define MHL_VFRMT_1920x1080p60_16_9_TIMING \
+	{16, (uint32_t)0xD1, (uint32_t)0xC0, 0, 0, 0, 148500000,\
+	1920, 1080, false, 2200, 280, 1125, 45,\
+	67500, 67433, 60000, 59940, 148500, 148350, 60000, 59940, false}
 
-static const struct mhl_video_timing_info mhl_1_2_support_video[SUPPORT_MHL_1_2_VIDEO_NUM] = {
-	HDMI_VFRMT_640x480p60_4_3_TIMING,
-	HDMI_VFRMT_720x480p60_16_9_TIMING,
-	HDMI_VFRMT_1280x720p60_16_9_TIMING,
-	HDMI_VFRMT_1920x1080p60_16_9_TIMING,
-	HDMI_VFRMT_1920x1080p24_16_9_TIMING,
-	HDMI_VFRMT_1920x1080p30_16_9_TIMING
-};
+#define MHL_VFRMT_1920x1080p24_16_9_TIMING \
+	{32, (uint32_t)0x00, (uint32_t)0x00, 0, 0, 0,  74250000,\
+	1920, 1080, false, 2750, 830, 1125, 45,\
+	27000, 26973, 24000, 23976, 74250, 74180, 24000, 23976, false}
 
-static const struct mhl_video_timing_info mhl_3_support_video[SUPPORT_MHL_3_VIDEO_NUM] = {
-	/* same as MHL 1/2*/
-	HDMI_VFRMT_640x480p60_4_3_TIMING,
-	HDMI_VFRMT_720x480p60_16_9_TIMING,
-	HDMI_VFRMT_1280x720p60_16_9_TIMING,
-	HDMI_VFRMT_1920x1080p60_16_9_TIMING,
-	HDMI_VFRMT_1920x1080p24_16_9_TIMING,
-	HDMI_VFRMT_1920x1080p30_16_9_TIMING,
-	/* newly 4k vic is added to MHL 1/2 in MHL3 */
-	HDMI_VFRMT_3840x2160p24_16_9_TIMING,
-	HDMI_VFRMT_3840x2160p30_16_9_TIMING
-};
+#define MHL_VFRMT_1920x1080p30_16_9_TIMING \
+	{34, (uint32_t)0x00, (uint32_t)0x00, 0, 0, 0,  74250000,\
+	1920, 1080, false, 2200, 280, 1125, 45,\
+	33750, 33716, 30000, 29970, 74250, 74180, 30000, 29970, false}
 
-/*
- * supported display info. high quality display info must be aligned in the low quality order.
- * (index 0 is low quality)
- *
- * NOTE : "quality" is currently based on resolution size.
- * High resolution is currently high quality.
- *
- * TODO : it must be meged with MHL1/2 and MHL3 support display information!!
+#define MHL_VFRMT_3840x2160p24_16_9_TIMING \
+	{93, (uint32_t)0x00, (uint32_t)0x00, 0, 0, 0, 297000000,\
+	3840, 2160, false, 5500, 1660, 2250, 90,\
+	54000, 53946, 24000, 23976, 297000, 296700, 23976, 24000, false}
+
+#define MHL_VFRMT_3840x2160p30_16_9_TIMING \
+	{95, (uint32_t)0x00, (uint32_t)0x00, 0, 0, 0, 297000000,\
+	3840, 2160, false, 4400, 560, 2250, 90,\
+	67500, 67433, 30000, 29970, 297000, 296700, 30000, 29970, false}
+
+#define RX_DPD_BITS (BIT_DPD_PDNRX12 \
+			  | BIT_DPD_PDIDCK_N \
+			  | BIT_DPD_PD_MHL_CLK_N)
+
+/* list priority order. last element is high priority.
+ * and it is considered in preferred display info
+ * replacelment logic in mhl_lib_edid_replace_dtd_preferred_disp_info().
+ * For example, if SINK support 720p@60 and 1080p@60, then 1080p@60 is injected
+ * to the preferred disp info.
  */
-const struct hdmi_edid_video_mode_property_type
-	preferred_disp_info[] = {
-
-		/* All 640 H Active */
-		{HDMI_VFRMT_640x480p60_4_3, 640, 480, false, 800, 160, 525, 45,
-		31465, 59940, 25175, 59940, true},
-
-		{HDMI_VFRMT_640x480p60_4_3, 640, 480, false, 800, 160, 525, 45,
-		31500, 60000, 25200, 60000, true},
-
-		/* All 720 H Active */
-		{HDMI_VFRMT_720x480p60_4_3,  720, 480, false, 858, 138, 525, 45,
-		31465, 59940, 27000, 59940, true},
-
-		{HDMI_VFRMT_1280x720p60_16_9,  1280, 720, false, 1650, 370, 750, 30,
-		44955, 59940, 74176, 59940, false},
-
-		{HDMI_VFRMT_1920x1080p24_16_9, 1920, 1080, false, 2750, 830, 1125,
-		45, 27000, 24000, 74250, 24000, false},
-
-		{HDMI_VFRMT_1920x1080p30_16_9, 1920, 1080, false, 2200, 280, 1125,
-		45, 33716, 29970, 74176, 30000, false}
+static const struct mhl_video_timing_info
+			somc_support_video[SUPPORT_SOMC_VIDEO_NUM] = {
+	MHL_VFRMT_640x480p60_4_3_TIMING,
+	MHL_VFRMT_720x480p60_16_9_TIMING,
+	MHL_VFRMT_1280x720p60_16_9_TIMING,
+	MHL_VFRMT_1920x1080p24_16_9_TIMING,
+	MHL_VFRMT_1920x1080p30_16_9_TIMING,
+	MHL_VFRMT_1920x1080p60_16_9_TIMING,
+	MHL_VFRMT_3840x2160p24_16_9_TIMING,
+	MHL_VFRMT_3840x2160p30_16_9_TIMING
 };
+
+static struct mhl_video_timing_info
+		somc_filtered_support_video[SUPPORT_SOMC_VIDEO_NUM];
 
 /* EDID retry */
 #define EDID_RETRY_MAX 3
 static int edid_retry_cnt;
 
-static uint8_t mhl_sink_sprt_hev_vic[20];
-
-/* support vic for mhl 1/2 */
-static uint8_t mhl_1_2_support_vic_array[SUPPORT_MHL_1_2_VIDEO_NUM];
-
-/* support vic for mhl 3 */
-static uint8_t mhl_3_support_vic_array[SUPPORT_MHL_3_VIDEO_NUM];
-
-static void mhl_dev_edid_setup_support_video(void)
-{
-	int i = 0;
-
-	pr_debug("%s:mhl1/2 vic setup\n", __func__);
-	for (i = 0; i < SUPPORT_MHL_1_2_VIDEO_NUM; i++) {
-		mhl_1_2_support_vic_array[i] = mhl_1_2_support_video[i].vic;
-		pr_debug("set support vic=%d\n", mhl_1_2_support_vic_array[i]);
-	}
-
-	pr_debug("%s:mhl3 vic setup\n", __func__);
-	for (i = 0; i < SUPPORT_MHL_3_VIDEO_NUM; i++) {
-		mhl_3_support_vic_array[i] = mhl_3_support_video[i].vic;
-		pr_debug("set support vic=%d\n", mhl_3_support_vic_array[i]);
-	}
-}
+/* this array is 0 termination, so last element must be 0 */
+static uint8_t mhl_sink_sprt_hev_vic[HEV_VIC_MAX_LEN];
 
 static bool isMhlSuptFilter;
 static void mhl_dev_edid_mhlsink_hev_init(void);
 
 
-static void edid_filter_prune_ext_blk(uint8_t *edid);
+static void edid_filter_prune_ext_blk(
+			uint8_t *edid,
+			const struct mhl_video_timing_info *somc_supp_timing,
+			uint8_t somc_supp_timing_len);
+
 static void mhl_sii8620_device_set_edid_block_size(uint8_t size);
-static void edid_filter_prune_block_0(uint8_t *blk0);
+static void edid_filter_prune_block_0(
+			uint8_t *blk0,
+			const struct mhl_video_timing_info *somc_supp_timing,
+			uint8_t somc_supp_timing_len);
+static uint32_t mhl_device_edid_get_current_link_clk_freq(
+					bool is_mhl3,
+					int mhl3_tmds_link_speed,
+					bool is_support_packed_pixel);
+static uint8_t mhl_device_edid_video_timing_filter(
+			const struct mhl_video_timing_info *somc_supp_timing,
+			uint8_t somc_supp_timing_len,
+			uint32_t link_clk_freq,
+			bool is_sink_16bpp_supp,
+			struct mhl_video_timing_info *filtered_timing);
+static uint8_t mhl_get_hev_vic_somc_and_sink_supported(
+			const struct mhl_video_timing_info *sink_supp_timing,
+			uint8_t sink_supp_timing_len,
+			uint8_t *somc_supp_hev_vic,
+			uint8_t somc_supp_hev_vic_len,
+			uint8_t *out_hev_vic);
 
 /* DEBUG */
 #ifdef EDID_DATA_DEBUG_PRINT
@@ -193,7 +178,7 @@ static uint8_t edid_block_size;
 struct mhl_sii8620_device_edid_context {
 	bool isReleased;
 	uint8_t edid_fifo_block_number;
-	int current_edid_request_block;
+	int current_edid_req_blk;
 	uint8_t edid_block_data[EDID_BLOCK_MAX_NUM*EDID_BLOCK_SIZE];
 	void *edid_done_timer;
 	bool is_request_queued;
@@ -206,21 +191,21 @@ static struct mhl_sii8620_device_edid_context edid_context;
 static void set_current_edid_request_block(int block_num)
 {
 	pr_debug("%s():block_num=%d\n", __func__, block_num);
-	edid_context.current_edid_request_block = block_num;
+	edid_context.current_edid_req_blk = block_num;
 }
 
 static uint8_t increment_current_edid_request_block(void)
 {
-	return ++edid_context.current_edid_request_block;
+	return ++edid_context.current_edid_req_blk;
 }
 
 static uint8_t get_current_edid_request_block(void)
 {
 	pr_debug("%s():%d\n",
 		__func__,
-		edid_context.current_edid_request_block);
+		edid_context.current_edid_req_blk);
 
-	return edid_context.current_edid_request_block;
+	return edid_context.current_edid_req_blk;
 }
 
 static uint8_t *get_stored_edid_block(void)
@@ -228,77 +213,30 @@ static uint8_t *get_stored_edid_block(void)
 	return edid_context.edid_block_data;
 }
 
-int mhl_sii8620_device_edid_get_block_number(void)
-{
-	return edid_context.edid_fifo_block_number;
-}
-
-int mhl_sii8620_device_get_edid_fifo_partial_block(
-	uint8_t start,
-	uint8_t length,
-	uint8_t *edid_buf)
-{
-	int ret_val;
-	int offset;
-
-	if (edid_context.edid_fifo_block_number & 0x01)
-		offset = edid_block_size; /*128 byte*/
-	else
-		offset = 0;
-
-	pr_debug("%s: initial offset=%d\n", __func__, offset);
-
-	offset += start;
-	if (edid_block_size == (offset + length))
-		edid_context.edid_fifo_block_number++;
-
-	pr_debug("%s: block_num=%d, offset=%d, length = %d, start=%d\n",
-		 __func__,
-		 edid_context.edid_fifo_block_number,
-		 offset, length, start);
-
-	mhl_pf_modify_reg(REG_PAGE_2_EDID_CTRL,
-				BIT_PAGE_2_EDID_CTRL_DEVCAP_SEL,
-				VAL_PAGE_2_EDID_CTRL_DEVCAP_SELECT_EDID);
-
-	mhl_pf_write_reg(REG_PAGE_2_EDID_FIFO_ADDR, (uint8_t)offset);
-
-	ret_val = mhl_pf_read_reg_block(REG_PAGE_2_EDID_FIFO_RD_DATA
-								, length
-								, edid_buf);
-
-	if (mhl_dev_is_set_hpd()) {
-		return MHL_SUCCESS;
-	} else {
-		pr_err("%s:No HPD ret_val:0x%02x\n", __func__, ret_val);
-		return MHL_FAIL;
-	}
-}
-
 void mhl_sii8620_device_edid_reset_ddc_fifo(void)
 {
 #ifndef MHL_DDC_RESET
 	uint8_t	ddc_status;
 
-	ddc_status = (uint8_t)mhl_pf_read_reg(REG_PAGE_0_DDC_STATUS);/*0,f2*/
+	ddc_status = (uint8_t)mhl_pf_read_reg(REG_DDC_STATUS);/*0,f2*/
 
-	mhl_pf_modify_reg(REG_PAGE_0_LM_DDC,
-					BIT_PAGE_0_LM_DDC_SW_TPI_EN,
-					VAL_PAGE_0_LM_DDC_SW_TPI_EN_ENABLED);
+	mhl_pf_modify_reg(REG_LM_DDC,
+					BIT_LM_DDC_SW_TPI_EN,
+					VAL_LM_DDC_SW_TPI_EN_ENABLED);
 
-	if (BIT_PAGE_0_DDC_STATUS_DDC_NO_ACK & ddc_status) {
+	if (BIT_DDC_STATUS_DDC_NO_ACK & ddc_status) {
 		pr_warn("Clearing DDC ack status\n");
-		mhl_pf_write_reg(REG_PAGE_0_DDC_STATUS,
-			(uint8_t)(ddc_status & ~BIT_PAGE_0_DDC_STATUS_DDC_NO_ACK));
+		mhl_pf_write_reg(REG_DDC_STATUS,
+			(uint8_t)(ddc_status & ~BIT_DDC_STATUS_DDC_NO_ACK));
 	}
 
-	mhl_pf_modify_reg(REG_PAGE_0_DDC_CMD,
-					MSK_PAGE_0_DDC_CMD_DDC_CMD,
-					VAL_PAGE_0_DDC_CMD_DDC_CMD_CLEAR_FIFO);
+	mhl_pf_modify_reg(REG_DDC_CMD,
+					MSK_DDC_CMD_DDC_CMD,
+					VAL_DDC_CMD_DDC_CMD_CLEAR_FIFO);
 
-	mhl_pf_modify_reg(REG_PAGE_0_LM_DDC,
-					BIT_PAGE_0_LM_DDC_SW_TPI_EN,
-					VAL_PAGE_0_LM_DDC_SW_TPI_EN_DISABLED);
+	mhl_pf_modify_reg(REG_LM_DDC,
+					BIT_LM_DDC_SW_TPI_EN,
+					VAL_LM_DDC_SW_TPI_EN_DISABLED);
 #endif
 }
 
@@ -312,23 +250,35 @@ int mhl_sii8620_device_edid_read_request(uint8_t block_number)
 		return MHL_FAIL;
 	}
 
-	if (mhl_dev_is_set_hpd()) {
-		mhl_pf_write_reg(REG_PAGE_0_DDC_MANUAL, 0x00);
-		mhl_pf_write_reg(REG_080C_HDCP1X_LB_BIST, 0x00);
+	if (ok_to_proceed_with_ddc()) {
+		int ddc_status;
+		ddc_status = mhl_pf_read_reg(REG_DDC_STATUS);
+		if (BIT_DDC_STATUS_DDC_BUS_LOW & ddc_status) {
+			int lm_ddc;
+			lm_ddc = mhl_pf_read_reg(REG_LM_DDC);
+			/* disable TPI mode */
+			mhl_pf_write_reg(REG_LM_DDC,
+					 lm_ddc |
+					 VAL_LM_DDC_SW_TPI_EN_DISABLED);
+			/* clear out the ddc bus low bit */
+			mhl_pf_write_reg(REG_DDC_STATUS,
+					 ddc_status &
+					 ~BIT_DDC_STATUS_DDC_BUS_LOW);
 
-		mhl_pf_write_reg(REG_PAGE_2_EDID_CTRL,
-			VAL_PAGE_2_EDID_CTRL_EDID_PRIME_VALID_DISABLE
-			| VAL_PAGE_2_EDID_CTRL_DEVCAP_SELECT_EDID
-			| VAL_PAGE_2_EDID_CTRL_EDID_FIFO_ADDR_AUTO_ENABLE
+			/* restore TPI mode state */
+			mhl_pf_write_reg(REG_LM_DDC, lm_ddc);
+		}
+
+		mhl_pf_write_reg(REG_EDID_CTRL,
+			VAL_EDID_CTRL_EDID_PRIME_VALID_DISABLE
+			| VAL_EDID_CTRL_DEVCAP_SELECT_EDID
+			| VAL_EDID_CTRL_EDID_FIFO_ADDR_AUTO_ENABLE
 			| ((block_number & 0x01) << 2)
-			| VAL_PAGE_2_EDID_CTRL_EDID_MODE_EN_ENABLE);
+			| VAL_EDID_CTRL_EDID_MODE_EN_ENABLE);
 
 		mhl_sii8620_device_edid_reset_ddc_fifo();
 
-		mhl_pf_write_reg(REG_PAGE_5_DISC_STAT1, 0x08);
-		mhl_pf_modify_reg(REG_PAGE_5_DISC_CTRL5,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE);
+		freeze_MHL_connect();
 
 		if (block_number == 0) {
 			pr_debug("%s()-block 0\n", __func__);
@@ -336,13 +286,15 @@ int mhl_sii8620_device_edid_read_request(uint8_t block_number)
 				BIT_INTR9_EDID_ERROR_MASK | BIT_INTR9_EDID_DONE_MASK,
 				VAL_INTR9_EDID_ERROR_MASK | VAL_INTR9_EDID_DONE_MASK);
 
-			mhl_pf_write_reg(REG_PAGE_2_TPI_CBUS_START,
-					 BIT_PAGE_2_TPI_CBUS_START_GET_EDID_START_0);
+			mhl_pf_write_reg(REG_TPI_CBUS_START,
+					 BIT_TPI_CBUS_START_GET_EDID_START_0);
 		} else {
-			uint8_t param = (uint8_t)(1 << (block_number-1));
+			uint8_t param = (1 << (block_number - 1));
+			u8 page = (u8)(REG_EDID_START_EXT >> 8);
+			u8 offset = (u8)REG_EDID_START_EXT;
 			pr_debug("%s:EDID HW Assist:Reg %02X:%02x to %02X\n",
-				 __func__, REG_PAGE_2_EDID_START_EXT, param);
-			mhl_pf_write_reg(REG_PAGE_2_EDID_START_EXT, param);
+				__func__, page, offset, param);
+			mhl_pf_write_reg(REG_EDID_START_EXT, param);
 		}
 		set_current_edid_request_block(block_number);
 	} else {
@@ -398,8 +350,9 @@ void mhl_device_start_edid_read(void)
 	   Stop_video()  internally disables hdcp function.
 	*/
 	stop_video();
-	drive_hpd_low();
+	deactivate_hpd();
 
+	mhl_lib_edid_init((const uint8_t *)get_stored_edid_block());
 	mhl_device_edid_init_edid_block_info();
 	mhl_dev_set_cbusp_cond_processing(DEV_EDID_READ);
 
@@ -417,9 +370,8 @@ void mhl_device_start_edid_read(void)
 	mhl_edid_start_edid_request();
 }
 
-static void mhl_device_clear_edid_done_timer(void *callback_param)
+static void mhl_device_edid_reset(void)
 {
-	pr_warn("%s:expired\n", __func__);
 	edid_context.is_Receive_EDID_DONE = true;
 
 	mhl_dev_clear_cbusp_cond_processing(DEV_EDID_READ);
@@ -427,13 +379,19 @@ static void mhl_device_clear_edid_done_timer(void *callback_param)
 	mhl_device_chip_reset();
 }
 
+static void mhl_device_clear_edid_done_timer(void *callback_param)
+{
+	pr_warn("%s:expired\n", __func__);
+	mhl_device_edid_reset();
+}
+
+
 void mhl_sii8620_device_edid_init(void)
 {
 	int ret;
 
 	pr_debug("%s()\n", __func__);
 	mhl_sii8620_device_set_edid_block_size(EDID_BLOCK_SIZE);
-	mhl_lib_edid_set_edid((const uint8_t *)get_stored_edid_block());
 	mhl_device_edid_init_edid_block_info();
 
 	edid_context.is_request_queued = false;
@@ -444,8 +402,6 @@ void mhl_sii8620_device_edid_init(void)
 					&edid_context.edid_done_timer);
 	if (ret != 0)
 		pr_err("%s: Failed to allocate EDID timer!\n", __func__);
-
-	mhl_dev_edid_setup_support_video();
 
 	mhl_dev_edid_mhlsink_hev_init();
 
@@ -491,9 +447,9 @@ static int read_edid_data_from_edid_fifo(uint8_t *edid_buf, EDID_FIFO_BLOCK_OFFS
 		 offset, edid_context.edid_fifo_block_number, edid_block_size);
 
 	edid_context.edid_fifo_block_number++;
-	mhl_pf_write_reg(REG_PAGE_2_EDID_FIFO_ADDR, offset);
+	mhl_pf_write_reg(REG_EDID_FIFO_ADDR, offset);
 
-	ret_val = mhl_pf_read_reg_block(REG_PAGE_2_EDID_FIFO_RD_DATA
+	ret_val = mhl_pf_read_reg_block(REG_EDID_FIFO_RD_DATA
 		, EDID_BLOCK_SIZE
 		, edid_buf);
 
@@ -505,49 +461,20 @@ static int read_edid_data_from_edid_fifo(uint8_t *edid_buf, EDID_FIFO_BLOCK_OFFS
 	if (!mhl_dev_edid_is_fifo_hw_good_cond(edid_buf))
 		return MHL_FAIL;
 
-	if (mhl_dev_is_set_hpd())
+	if (ok_to_proceed_with_ddc())
 		return MHL_SUCCESS;
 	else
 		return MHL_FAIL;
 }
 
-static int mhl_sii8620_device_get_edid_fifo_next_block(uint8_t *edid_buf)
-{
-	int ret_val;
-	uint8_t offset;
-
-	offset = (uint8_t) (edid_block_size * (edid_context.edid_fifo_block_number & 0x01));
-	pr_debug("offset :%d, edid_context.edid_fifo_block_number : %d, edid_block_size:%d\n", offset, edid_context.edid_fifo_block_number, edid_block_size);
-
-	edid_context.edid_fifo_block_number++;
-
-	mhl_pf_modify_reg(REG_PAGE_2_EDID_CTRL,
-				BIT_PAGE_2_EDID_CTRL_DEVCAP_SEL,
-				VAL_PAGE_2_EDID_CTRL_DEVCAP_SELECT_EDID);
-
-	mhl_pf_write_reg(REG_PAGE_2_EDID_FIFO_ADDR, offset);
-
-	ret_val = mhl_pf_read_reg_block(REG_PAGE_2_EDID_FIFO_RD_DATA
-		, EDID_BLOCK_SIZE
-		, edid_buf);
-
-	if (mhl_dev_is_set_hpd()) {
-		pr_debug("Done reading EDID from FIFO using HW_ASSIST ret_val:0x%02x\n", ret_val);
-		return MHL_SUCCESS;
-	} else {
-		pr_err("No HPD ret_val:0x%02x\n", ret_val);
-		return MHL_FAIL;
-	}
-}
-
 static void mhl_sii8620_device_init_rx_regs(void)
 {
 	/* power up the RX */
-	mhl_pf_modify_reg(REG_PAGE_0_DPD,
+	mhl_pf_modify_reg(REG_DPD,
 				RX_DPD_BITS, RX_DPD_BITS);
 
 	/* TODO: add to PR. Default for 2A4 is 0x0f */
-	mhl_pf_write_reg(REG_PAGE_2_RX_HDMI_CTRL3, 0x00);
+	mhl_pf_write_reg(REG_RX_HDMI_CTRL3, 0x00);
 
 	/*
 	 * Before exposing the EDID to upstream device,setup to drop all
@@ -555,15 +482,15 @@ static void mhl_sii8620_device_init_rx_regs(void)
 	 * Dropping all packets means we still get the AVIF interrupts which is
 	 * crucial. Packet filters must be disabled until after TMDS is enabled.
 	 */
-	mhl_pf_write_reg(REG_PAGE_2_PKT_FILTER_0, 0xFF);
-	mhl_pf_write_reg(REG_PAGE_2_PKT_FILTER_1, 0xFF);
+	mhl_pf_write_reg(REG_PKT_FILTER_0, 0xFF);
+	mhl_pf_write_reg(REG_PKT_FILTER_1, 0xFF);
 
 	/* 0x231 def=0A. changed on 1/24/2014 per char team */
-	mhl_pf_write_reg(REG_PAGE_2_ALICE0_BW_I2C, 0x06);
+	mhl_pf_write_reg(REG_ALICE0_BW_I2C, 0x06);
 
-	mhl_pf_modify_reg(REG_PAGE_2_RX_HDMI_CLR_BUFFER,
-				BIT_PAGE_2_RX_HDMI_CLR_BUFFER_VSI_CLR_EN,
-				VAL_PAGE_2_RX_HDMI_CLR_BUFFER_VSI_CLR_EN_CLEAR);
+	mhl_pf_modify_reg(REG_RX_HDMI_CLR_BUFFER,
+				BIT_RX_HDMI_CLR_BUFFER_VSI_CLR_EN,
+				VAL_RX_HDMI_CLR_BUFFER_VSI_CLR_EN_CLEAR);
 
 }
 
@@ -576,54 +503,29 @@ static void mhl_sii8620_device_init_rx_regs(void)
 */
 void edid_hw_sm_clean_up(void)
 {
-	uint8_t	ddc_status, cbus_status;
-	mhl_pf_write_reg(REG_080C_HDCP1X_LB_BIST, BIT_080C_HDCP1X_LB_BIST);
-	mhl_pf_write_reg(REG_PAGE_0_DDC_MANUAL,
-		BIT_PAGE_0_DDC_MANUAL_MAN_DDC);
-	mhl_pf_write_reg(REG_PAGE_2_INTR9, 0xFF);
+	uint8_t	cbus_status;
+	mhl_pf_write_reg(REG_DDC_MANUAL,
+		BIT_DDC_MANUAL_MAN_DDC);
+	mhl_pf_write_reg(REG_INTR9, 0xFF);
 
 	/* Disable EDID interrupt */
-	mhl_pf_write_reg(REG_PAGE_2_INTR9_MASK, 0x00);
+	mhl_pf_write_reg(REG_INTR9_MASK, 0x00);
 
-	cbus_status = mhl_pf_read_reg(REG_PAGE_5_CBUS_STATUS);
-	if (!(BIT_PAGE_5_CBUS_STATUS_CBUS_CONNECTED & cbus_status)) {
-		mhl_pf_write_reg(REG_PAGE_5_DISC_STAT1, 0x08);
-		mhl_pf_modify_reg(REG_PAGE_5_DISC_CTRL5,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE);
+	cbus_status = mhl_pf_read_reg(REG_CBUS_STATUS);
+	if (!(BIT_CBUS_STATUS_CBUS_CONNECTED & cbus_status)) {
+		mhl_pf_write_reg(REG_DISC_STAT1, 0x08);
+		mhl_pf_modify_reg(REG_DISC_CTRL5,
+			BIT_DISC_CTRL5_DSM_OVRIDE,
+			BIT_DISC_CTRL5_DSM_OVRIDE);
 	}
 
-	mhl_pf_write_reg(REG_PAGE_2_TPI_CBUS_START,
-		BIT_PAGE_2_TPI_CBUS_START_GET_EDID_START_0);
-	ddc_status = mhl_pf_read_reg(REG_PAGE_0_DDC_STATUS);
+	/* Trigger EDID to generate an error to reset state machine */
+	mhl_pf_write_reg(REG_TPI_CBUS_START,
+		BIT_TPI_CBUS_START_GET_EDID_START_0);
 
-	if (!(BIT_PAGE_5_CBUS_STATUS_CBUS_CONNECTED & cbus_status)) {
-		mhl_pf_modify_reg(REG_PAGE_5_DISC_CTRL5,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE,
-			0);
-	}
-
-	mhl_pf_write_reg(REG_PAGE_2_INTR9, 0xFF);
-	mhl_pf_write_reg(REG_PAGE_0_DDC_MANUAL, 0x00);
-	mhl_pf_write_reg(REG_080C_HDCP1X_LB_BIST, 0x00);
-
-	ddc_status = mhl_pf_read_reg(REG_PAGE_0_DDC_STATUS);
-
-	mhl_pf_modify_reg(REG_PAGE_0_LM_DDC,
-		BIT_PAGE_0_LM_DDC_SW_TPI_EN,
-		VAL_PAGE_0_LM_DDC_SW_TPI_EN_DISABLED);
-
-	if (BIT_PAGE_0_DDC_STATUS_DDC_BUS_LOW & ddc_status) {
-		pr_debug("%s: Clearing DDC ack status\n", __func__);
-		mhl_pf_write_reg(REG_PAGE_0_DDC_STATUS,
-			ddc_status &
-			~BIT_PAGE_0_DDC_STATUS_DDC_BUS_LOW);
-	}
-
-	mhl_pf_modify_reg(REG_PAGE_0_LM_DDC,
-		BIT_PAGE_0_LM_DDC_SW_TPI_EN,
-		VAL_PAGE_0_LM_DDC_SW_TPI_EN_ENABLED);
-
+	mhl_pf_write_reg(REG_INTR9, 0xFF);
+	mhl_pf_write_reg(REG_DDC_MANUAL, 0x00);
+	mhl_pf_write_reg(REG_HDCP1X_LB_BIST, 0x00);
 }
 
 static int set_upstream_edid(uint8_t *edid_buf, uint16_t length)
@@ -632,7 +534,7 @@ static int set_upstream_edid(uint8_t *edid_buf, uint16_t length)
 
 	pr_debug("%s:edid write length=%d\n", __func__, length);
 
-	drive_hpd_low();
+	deactivate_hpd();
 
 	/* hdmi spec. 120 msec is enough. */
 	msleep(120);
@@ -642,29 +544,26 @@ static int set_upstream_edid(uint8_t *edid_buf, uint16_t length)
 	edid_hw_sm_clean_up();
 
 	/* choose EDID instead of devcap to appear at the FIFO */
-	mhl_pf_write_reg(REG_PAGE_2_EDID_CTRL,
-		 VAL_PAGE_2_EDID_CTRL_EDID_PRIME_VALID_DISABLE
-		| VAL_PAGE_2_EDID_CTRL_DEVCAP_SELECT_EDID
-		| VAL_PAGE_2_EDID_CTRL_EDID_FIFO_ADDR_AUTO_ENABLE
-		| VAL_PAGE_2_EDID_CTRL_EDID_MODE_EN_ENABLE);
+	mhl_pf_write_reg(REG_EDID_CTRL,
+		 VAL_EDID_CTRL_EDID_PRIME_VALID_DISABLE
+		| VAL_EDID_CTRL_DEVCAP_SELECT_EDID
+		| VAL_EDID_CTRL_EDID_FIFO_ADDR_AUTO_ENABLE
+		| VAL_EDID_CTRL_EDID_MODE_EN_ENABLE);
 
 	/* clear the address toward the FIFO and write edid data into the FIFO */
-	mhl_pf_write_reg(REG_PAGE_2_EDID_FIFO_ADDR, 0);
-	mhl_pf_write_reg_block(REG_PAGE_2_EDID_FIFO_WR_DATA, length, edid_buf);
+	mhl_pf_write_reg(REG_EDID_FIFO_ADDR, 0);
+	mhl_pf_write_reg_block(REG_EDID_FIFO_WR_DATA, length, edid_buf);
 
 	DUMP_EDID_BLOCK(0, edid_buf, length)
 
-	mhl_pf_write_reg(REG_PAGE_2_EDID_CTRL,
-		 VAL_PAGE_2_EDID_CTRL_EDID_PRIME_VALID_ENABLE
-		| VAL_PAGE_2_EDID_CTRL_DEVCAP_SELECT_EDID
-		| VAL_PAGE_2_EDID_CTRL_EDID_FIFO_ADDR_AUTO_ENABLE
-		| VAL_PAGE_2_EDID_CTRL_EDID_MODE_EN_ENABLE);
-
-	/* Turn on heartbeat polling unconditionally to meet the specs */
-	enable_heartbeat();
+	mhl_pf_write_reg(REG_EDID_CTRL,
+		 VAL_EDID_CTRL_EDID_PRIME_VALID_ENABLE
+		| VAL_EDID_CTRL_DEVCAP_SELECT_EDID
+		| VAL_EDID_CTRL_EDID_FIFO_ADDR_AUTO_ENABLE
+		| VAL_EDID_CTRL_EDID_MODE_EN_ENABLE);
 
 	/* Enable SCDT interrupt to detect stable incoming clock */
-	mhl_pf_write_reg(REG_PAGE_0_INTR5_MASK, BIT_PAGE_0_INTR5_MASK_INTR5_MASK0);
+	mhl_pf_write_reg(REG_INTR5_MASK, BIT_INTR5_MASK0);
 
 	/* Disable EDID interrupt */
 	mhl_pf_modify_reg(REG_EDID_FIFO_INT_MASK,
@@ -672,12 +571,12 @@ static int set_upstream_edid(uint8_t *edid_buf, uint16_t length)
 					0x00);
 
 	/* HPD was held low all this time. Now we send an HPD high */
-	reg_val = drive_hpd_high();
+	reg_val = activate_hpd();
 
 	/* If SCDT is already high, then we will not get an interrupt */
-	if (BIT_PAGE_2_TMDS_CSTAT_P3_SCDT & reg_val) {
+	if (BIT_TMDS_CSTAT_P3_SCDT & reg_val) {
+		pr_info("%s: SCDT status is already HIGH.\n", __func__);
 #if 0 /* SIMG code has this impl. But, SOMC disable . TODO qusetion to SIMG */
-		pr_warn("%s:tmds clock. hpd is just actived\n", __func__);
 		/* todo : the int must be executed in int handler by manually. queue? */
 		int_scdt_isr(BIT_INTR_SCDT_CHANGE);
 #endif
@@ -693,15 +592,22 @@ static int set_upstream_edid(uint8_t *edid_buf, uint16_t length)
 }
 
 /* return false : invalid data, otherwise true */
-static bool mhl_dev_edid_do_edid_filter(uint8_t *edid_buf_read_ptr)
+static bool mhl_dev_edid_do_edid_filter(
+				uint8_t *edid_buf_read_ptr,
+				struct mhl_video_timing_info *somc_supp_timing,
+				uint8_t somc_supp_timing_len)
 {
 	pr_debug("%s()", __func__);
 
 	if (IS_BLOCK_0(edid_buf_read_ptr)) {
-		edid_filter_prune_block_0(edid_buf_read_ptr);
+		edid_filter_prune_block_0(edid_buf_read_ptr,
+						somc_supp_timing,
+						somc_supp_timing_len);
 	} else if (IS_EXT_BLOCK(edid_buf_read_ptr)) {
 		pr_debug("%s:ext blk is arrived\n", __func__);
-		edid_filter_prune_ext_blk(edid_buf_read_ptr);
+		edid_filter_prune_ext_blk(edid_buf_read_ptr,
+						somc_supp_timing,
+						somc_supp_timing_len);
 	} else
 		/* nothing to do*/
 		pr_debug("%s:no blk0, no ext blk.\n", __func__);
@@ -725,8 +631,14 @@ int  mhl_8620_dev_int_edid_isr(uint8_t int_edid_devcap_status)
 	 * cleared immediately!! */
 	edid_context.is_Receive_EDID_DONE = true;
 
-	if (!mhl_dev_is_set_hpd())
-		goto edid_read_stop;
+	if (!ok_to_proceed_with_ddc()) {
+		/* Reset chip when ddc is abnormal. */
+		/* Because MHL driver may not be able to detect */
+		/* disconnecting. */
+		pr_warn("%s:chip off to avoid freeze!!\n", __func__);
+		chip_power_off();
+		return int_edid_devcap_status;
+	}
 
 	if (edid_context.is_request_queued == true) {
 		/*
@@ -747,12 +659,10 @@ int  mhl_8620_dev_int_edid_isr(uint8_t int_edid_devcap_status)
 
 		pr_debug("%s: EDID_DONE. available in fifo\n", __func__);
 
-		ddcStatus = mhl_pf_read_reg(REG_PAGE_0_DDC_STATUS);
-		mhl_pf_modify_reg(REG_PAGE_5_DISC_CTRL5,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE,
-			0);
+		ddcStatus = mhl_pf_read_reg(REG_DDC_STATUS);
+		unfreeze_MHL_connect();
 
-		if (BIT_PAGE_0_DDC_STATUS_DDC_NO_ACK & ddcStatus) {
+		if (BIT_DDC_STATUS_DDC_NO_ACK & ddcStatus) {
 			pr_warn("%s,ddc no ack\n", __func__);
 			goto retry_edid_read;
 		}
@@ -789,6 +699,10 @@ int  mhl_8620_dev_int_edid_isr(uint8_t int_edid_devcap_status)
 			edid_buf_read_ptr, block_num))
 			goto retry_edid_read;
 
+		/* GoogleAnalytics(only read EDID block 0) */
+		if (0 == get_current_edid_request_block())
+			set_ga_data_from_edid(edid_buf_read_ptr);
+
 		/* try to read next block or finish */
 		num_extensions = mhl_edid_parser_get_num_cea_861_extensions(get_stored_edid_block());
 		if (num_extensions < 0) {
@@ -811,9 +725,8 @@ int  mhl_8620_dev_int_edid_isr(uint8_t int_edid_devcap_status)
 	if (BIT_INTR9_EDID_ERROR & int_edid_devcap_status) {
 		pr_warn("%s:err int=0x%02x\n", __func__,
 			int_edid_devcap_status);
-		mhl_pf_modify_reg(REG_PAGE_5_DISC_CTRL5,
-			BIT_PAGE_5_DISC_CTRL5_DSM_OVRIDE,
-			0);
+
+		unfreeze_MHL_connect();
 
 		goto retry_edid_read;
 	}
@@ -838,13 +751,14 @@ edid_read_stop:
 /* retry edid read from block 0 */
 retry_edid_read:
 	if (edid_retry_cnt < EDID_RETRY_MAX) {
-		pr_warn("%s: retry edid read. cnt=0x2%x\n",
+		pr_warn("%s: retry edid read. cnt=0x%02x\n",
 			__func__, edid_retry_cnt);
 		mhl_device_start_edid_read();
 		edid_retry_cnt++;
 	} else {
 		pr_warn("%s: retry end!! (%d retry)\n",
 			__func__, edid_retry_cnt);
+		mhl_device_edid_reset();
 		goto edid_read_stop;
 	}
 
@@ -855,14 +769,117 @@ void mhl_device_edid_set_upstream_edid(void)
 {
 	int total_size = (1 + get_current_edid_request_block()) * edid_block_size;
 	int i;
+	int is_mhl3 = mhl_drv_connection_is_mhl3();
+	int tmds_max_speed = mhl_cbus_get_highest_tmds_link_speed();
+	bool is_packed_pixel_available = mhl_cbus_packed_pixel_available();
+	struct mhl_video_timing_info *filtered_timing =
+					somc_filtered_support_video;
+	uint8_t filtered_timing_len;
+	uint32_t link_clk_freq;
+	bool is_16bpp_supp;
+	uint8_t *sink_supp_hev_vic;
+	uint8_t length_hev_vic;
+	uint8_t somc_sink_supp_hev_vic[HEV_VIC_MAX_LEN];
+	bool hev_vic_inserted;
+	uint8_t *edid_buf;
 
-	for (i = 0; i < 1 + get_current_edid_request_block(); i++)
-		mhl_dev_edid_do_edid_filter(get_stored_edid_block() + (i * edid_block_size));
+	memset(filtered_timing, 0, sizeof(somc_filtered_support_video));
+	memset(somc_sink_supp_hev_vic, 0, sizeof(somc_sink_supp_hev_vic));
+
+	/* DVI does not have avi, so mhl driver can't detect whether the
+	 * video output timing which requires packed pixel mode is chosen
+	 * or not in HDMI side. If it should
+	 * be realized, then we need the patch in HDMI driver to notify the
+	 * video timing mode to mhl. At this moment, we don't have the
+	 * motivation of adding the patch. So we set false here.
+	 */
+	if (!mhl_lib_edid_is_hdmi())
+		is_packed_pixel_available = false;
+
+	link_clk_freq = mhl_device_edid_get_current_link_clk_freq(
+						(bool)is_mhl3,
+						tmds_max_speed,
+						is_packed_pixel_available);
+	pr_debug("%s():link_clk_freq = %d\n", __func__, link_clk_freq);
+
+	if (is_mhl3)
+		is_16bpp_supp = mhl_cbus_16bpp_available();
+	else
+		is_16bpp_supp = is_packed_pixel_available;
+
+	if (!mhl_lib_edid_is_hdmi())
+		is_16bpp_supp = false;
+
+	/* filtered_timing have only VIC which can display potentially of */
+	/* Sink or Dongle at this time. */
+	filtered_timing_len =  mhl_device_edid_video_timing_filter(
+						somc_support_video,
+						SUPPORT_SOMC_VIDEO_NUM,
+						link_clk_freq,
+						is_16bpp_supp,
+						filtered_timing);
+
+	/* get HEV VIC supported by sink */
+	sink_supp_hev_vic =
+		(uint8_t *)mhl_device_edid_get_mhlsink_sprt_hev(
+							&length_hev_vic);
+	if (length_hev_vic > 0)
+		/* remove unsupport 4k hev vic */
+		filtered_timing_len = mhl_lib_edid_remove_unsupport_4k_vic(
+						filtered_timing,
+						filtered_timing_len,
+						sink_supp_hev_vic,
+						length_hev_vic);
+
+	/* filter extension block */
+	for (i = 1; i < 1 + get_current_edid_request_block(); i++) {
+		edid_buf = get_stored_edid_block() + (i * edid_block_size);
+		mhl_dev_edid_do_edid_filter(edid_buf,
+					filtered_timing,
+					filtered_timing_len);
+	}
+
+	/* get HEV VIC supported by sink and somc */
+	length_hev_vic = mhl_get_hev_vic_somc_and_sink_supported(
+					filtered_timing,
+					filtered_timing_len,
+					sink_supp_hev_vic,
+					length_hev_vic,
+					somc_sink_supp_hev_vic); /* output */
+
+	/* If there is not HEV VIC of getting from WriteBurst in */
+	/* VideoDataBlock, expand VideoDataBlock and insert HEV VIC. */
+	if (length_hev_vic > 0) {
+		for (i = 1; i < 1 + get_current_edid_request_block(); i++) {
+			edid_buf = get_stored_edid_block()
+					+ (i * edid_block_size);
+			if (IS_EXT_BLOCK(edid_buf)) {
+				hev_vic_inserted = mhl_lib_edid_insert_hev_vic(
+							edid_buf,
+							somc_sink_supp_hev_vic,
+							length_hev_vic);
+				if (hev_vic_inserted) {
+					/* insert success. */
+					break;
+				}
+			}
+		}
+	}
+
+	/* the block0 filter must be executed after the extension */
+	/* block filter. Otherwise, most best vic information */
+	/* can't be set into the preferred display info area. */
+	mhl_dev_edid_do_edid_filter(get_stored_edid_block(),
+					filtered_timing,
+					filtered_timing_len);
 
 	set_upstream_edid(get_stored_edid_block(), total_size);
 }
 
-static void edid_filter_prune_block_0(uint8_t *blk0)
+static void edid_filter_prune_block_0(
+			uint8_t *blk0,
+			const struct mhl_video_timing_info *somc_supp_timing,
+			uint8_t somc_supp_timing_len)
 {
 	if (!mhl_edid_check_edid_header(blk0)) {
 		pr_debug("%s:not blk 0. ignore\n", __func__);
@@ -870,19 +887,19 @@ static void edid_filter_prune_block_0(uint8_t *blk0)
 	}
 
 	mhl_lib_edid_remove_established_timing(
-		mhl_1_2_support_video,
-		SUPPORT_MHL_1_2_VIDEO_NUM,
+		somc_supp_timing,
+		somc_supp_timing_len,
 		(blk0 + 0x23));
 
 	mhl_lib_edid_remove_standard_timing(
-		mhl_1_2_support_video,
-		SUPPORT_MHL_1_2_VIDEO_NUM,
+		somc_supp_timing,
+		somc_supp_timing_len,
 		(blk0 + 0x26));
 
-	mhl_lib_edid_replace_unsupport_descriptor_with_dummy(
-		blk0,
-		preferred_disp_info,
-		sizeof(preferred_disp_info)/sizeof(*preferred_disp_info));
+	mhl_lib_edid_remove_and_replace_detailed_timing(
+		somc_supp_timing,
+		somc_supp_timing_len,
+		(blk0 + 0x36));
 
 	mhl_lib_edid_set_checksum(blk0);
 }
@@ -901,9 +918,14 @@ static bool edid_is_ext_block(uint8_t *edid)
 /*
  * edid : 128 byte edid data
  */
-static void edid_filter_prune_ext_blk(uint8_t *edid)
+static void edid_filter_prune_ext_blk(
+			uint8_t *edid,
+			const struct mhl_video_timing_info *somc_supp_timing,
+			uint8_t somc_supp_timing_len)
 {
 	PCEA_extension_t p_CEA_extension = (PCEA_extension_t)edid;
+	uint8_t supp_vic_array[SUPPORT_SOMC_VIDEO_NUM];
+	uint8_t i;
 
 	if (!edid_is_ext_block(edid))
 		return;
@@ -913,48 +935,21 @@ static void edid_filter_prune_ext_blk(uint8_t *edid)
 		return;
 	}
 
-	if (mhl_device_is_peer_device_mhl1_2()) {
-		pr_debug("%s:MHL1/2\n" , __func__);
+	/* make vic array */
+	memset(supp_vic_array, 0x00, SUPPORT_SOMC_VIDEO_NUM);
+	for (i = 0; i < somc_supp_timing_len; i++)
+		supp_vic_array[i] = somc_supp_timing[i].vic;
 
-		/* remove all unsupported vic */
-		mhl_lib_edid_remove_vic_from_svd(
-			edid, mhl_1_2_support_vic_array,
-			 sizeof(mhl_1_2_support_vic_array));
+	/* remove all unsupported vic from svd */
+	mhl_lib_edid_remove_vic_from_svd(
+		edid, supp_vic_array, somc_supp_timing_len);
 
-		/* remove all hdmi vic and 3d info from vsd */
-		mhl_lib_edid_remove_hdmi_vic_and_3d_from_vsd(edid, NULL, 0);
+	/* remove all hdmi vic and 3d info from vsd */
+	mhl_lib_edid_remove_hdmi_vic_and_3d_from_vsd(
+		edid, supp_vic_array, somc_supp_timing_len);
 
-		/* if either sink or source does not support pp,
-		 * vic16 is removed
-		 */
-		if (mhl_cbus_packed_pixel_available() == false)
-			mhl_edid_parser_remove_vic16_1080p60fps(edid);
-
-	} else if (mhl_device_is_peer_device_mhl3()) {
-		uint8_t length = 0;
-		uint8_t *mhl_supp_4k_vic = NULL;
-
-		pr_debug("%s:MHL3\n" , __func__);
-
-		/* remove all unsupported vic */
-		mhl_lib_edid_remove_vic_from_svd(
-			edid, mhl_3_support_vic_array,
-			 sizeof(mhl_3_support_vic_array));
-
-		/* make hdmi vic filter with MHL3 4k capability */
-		mhl_supp_4k_vic = (uint8_t *)mhl_device_edid_get_mhlsink_sprt_hev(&length);
-
-		/* remove all unsuported hdmi vic and entier 3d info */
-		mhl_lib_edid_remove_hdmi_vic_and_3d_from_vsd(
-			edid, mhl_supp_4k_vic, length);
-
-		return;
-	} else {
-		pr_warn("%s:illegal cbus status:%d\n",
-			 __func__,
-			 mhl_device_get_cbus_mode());
-		return;
-	}
+	mhl_lib_edid_remove_unsupp_detailed_timing_from_ext_blk(
+		edid, somc_supp_timing, somc_supp_timing_len);
 
 	return;
 }
@@ -983,10 +978,10 @@ static int mhl_dev_edid_get_sprt_hev_last_idx(void)
 static bool mhl_dev_edid_is_vic_support(const uint8_t hev)
 {
 	int i;
-	int max = ARRAY_SIZE(mhl_3_support_video);
+	int max = SUPPORT_SOMC_VIDEO_NUM;
 
 	for (i = 0; i < max; i++)
-		if (hev == mhl_3_support_video[i].vic)
+		if (hev == somc_support_video[i].vic)
 			return true;
 
 	return false;
@@ -1016,8 +1011,8 @@ static void mhl_device_edid_add_mhlsink_sprt_hev(const uint8_t *hev, int length)
 
 	max = last_idx + length;
 
-	if (max > 20) {
-		max = 20;
+	if (max > HEV_VIC_MAX_LEN) {
+		max = HEV_VIC_MAX_LEN;
 		pr_warn("%s:exceed max", __func__);
 	}
 
@@ -1036,8 +1031,118 @@ static void mhl_device_edid_add_mhlsink_sprt_hev(const uint8_t *hev, int length)
 	}
 }
 
-
 void mhl_device_edid_setup_sink_support_hev_vic(uint8_t *vics, uint8_t length)
 {
 	mhl_device_edid_add_mhlsink_sprt_hev(vics, length);
+}
+
+/* if arg 1 is mhl3, then this value is used */
+/* packed pixel flag is only available in MHL1/2 case */
+static uint32_t mhl_device_edid_get_current_link_clk_freq(
+					bool is_mhl3,
+					int mhl3_tmds_link_speed,
+					bool is_support_packed_pixel)
+{
+	uint32_t link_speed = 0;
+
+	/* decision of link clock speed */
+	if (is_mhl3) {
+		/* MHL3 */
+
+		/* each tmds_speed is divided by 10
+		 * since uint32_t does not enough size */
+		switch (mhl3_tmds_link_speed) {
+		case MHL_XDC_TMDS_150:
+			link_speed = 150000000;
+			break;
+		case MHL_XDC_TMDS_300:
+			link_speed = 300000000;
+			break;
+		case MHL_XDC_TMDS_600:
+			link_speed = 600000000;
+			break;
+		default:
+			pr_warn("%s: illegal tmds speed type = %d\n", __func__,
+					mhl3_tmds_link_speed);
+			break;
+		}
+	} else {
+		/* MHL1/2 */
+		if (is_support_packed_pixel)
+			link_speed = 300000000;
+		else
+			link_speed = 225000000;
+	}
+
+	return link_speed;
+}
+
+static uint8_t mhl_device_edid_video_timing_filter(
+			const struct mhl_video_timing_info *somc_supp_timing,
+			uint8_t somc_supp_timing_len,
+			uint32_t link_clk_freq,
+			bool is_sink_16bpp_supp,
+			struct mhl_video_timing_info *filtered_timing)
+{
+	int i;
+	uint8_t length = 0;
+
+	memset(filtered_timing, 0,
+		sizeof(struct mhl_video_timing_info) * somc_supp_timing_len);
+
+	for (i = 0; i < somc_supp_timing_len; i++) {
+		uint32_t clock = somc_supp_timing[i].pixel_clk_freq;
+		uint32_t vic = somc_supp_timing[i].vic;
+
+		pr_debug("%s: vic(%d) pixel clock = %d\n", __func__,
+							vic, clock);
+		if (clock > 0) {
+			uint32_t vic_link_clk;
+
+			if (is_sink_16bpp_supp)
+				vic_link_clk =
+					mhl_lib_edid_get_16_link_clk(
+							(uint32_t)clock);
+			else
+				vic_link_clk =
+					mhl_lib_edid_get_24_link_clk(
+							(uint32_t)clock);
+
+			pr_debug("%s: vic(%d) link clk freq = %d\n",
+					__func__, vic, vic_link_clk);
+
+			if (vic_link_clk <= link_clk_freq) {
+				pr_debug("%s: added vic = %d\n", __func__, vic);
+				filtered_timing[length++] = somc_supp_timing[i];
+			}
+
+		} else {
+			pr_err("%s: illegal\n", __func__);
+			return 0;
+		}
+	}
+
+	return length;
+}
+
+static uint8_t mhl_get_hev_vic_somc_and_sink_supported(
+			const struct mhl_video_timing_info *sink_supp_timing,
+			uint8_t sink_supp_timing_len,
+			uint8_t *supp_hev_vic,
+			uint8_t supp_hev_vic_len,
+			uint8_t *out_hev_vic)
+{
+	int i,j;
+	uint8_t ret_length = 0;
+
+	for (i = 0; i < supp_hev_vic_len; i++) {
+		for (j = 0; j < sink_supp_timing_len; j++) {
+			if (supp_hev_vic[i] == sink_supp_timing[j].vic) {
+				out_hev_vic[ret_length++] = supp_hev_vic[i];
+				break;
+			}
+		}
+	}
+
+	return ret_length;
 }
