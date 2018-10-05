@@ -18,7 +18,7 @@
 #include <linux/timer.h>
 #include <linux/sched.h>
 #include <linux/leds.h>
-#include "leds.h"
+#include "../leds.h"
 
 struct heartbeat_trig_data {
 	unsigned int phase;
