@@ -26,13 +26,25 @@
 #define EPOLL_CTL_DEL 2
 #define EPOLL_CTL_MOD 3
 
+/*
+ * Request the handling of system wakeup events so as to prevent system suspends
+ * from happening while those events are being processed.
+ *
+ * Assuming neither EPOLLET nor EPOLLONESHOT is set, system suspends will not be
+ * re-allowed until epoll_wait is called again after consuming the wakeup
+ * event(s).
+ *
+ * Requires CAP_BLOCK_SUSPEND
+ */
+#define EPOLLWAKEUP (1 << 29)
+
 /* Set the One Shot behaviour for the target file descriptor */
 #define EPOLLONESHOT (1 << 30)
 
 /* Set the Edge Triggered behaviour for the target file descriptor */
 #define EPOLLET (1 << 31)
 
-/* 
+/*
  * On x86-64 make the 64bit structure have the same alignment as the
  * 32bit structure. This makes 32bit emulation easier.
  *
