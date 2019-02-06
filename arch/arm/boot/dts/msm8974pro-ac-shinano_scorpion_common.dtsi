@@ -928,7 +928,7 @@
 
 			qcom,rgb_0 {
 				label = "rgb";
-				linux,name = "led:rgb_red";
+				linux,name = "red";
 				qcom,mode = "pwm";
 				qcom,pwm-channel = <6>;
 				qcom,pwm-us = <1000>;
@@ -941,7 +941,7 @@
 
 			qcom,rgb_1 {
 				label = "rgb";
-				linux,name = "led:rgb_green";
+				linux,name = "green";
 				qcom,mode = "pwm";
 				qcom,pwm-channel = <5>;
 				qcom,pwm-us = <1000>;
@@ -954,7 +954,7 @@
 
 			qcom,rgb_2 {
 				label = "rgb";
-				linux,name = "led:rgb_blue";
+				linux,name = "blue";
 				qcom,mode = "pwm";
 				qcom,pwm-channel = <4>;
 				qcom,pwm-us = <1000>;
